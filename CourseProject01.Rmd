@@ -1,4 +1,5 @@
 ```{r includeChunk, echo=FALSE, results="hide"}
+#Final version
 library(stats)
 library(lattice)
 library(ggplot2)
