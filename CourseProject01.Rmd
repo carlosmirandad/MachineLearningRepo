@@ -1,0 +1,139 @@
+```{r includeChunk, echo=FALSE, results="hide"}
+library(stats)
+library(lattice)
+library(ggplot2)
+library(caret)
+library(utils)
+library(graphics)
+library(datasets)
+```
+
+Practical Machine Learning - Course Project
+===========================================
+
+## Objectives
+
+We are asked to determine how well individuals perform a weight lifting exercise using human-activity-recognition data captured by accelerometers. 
+
+We are asked to answer the following questions in this report:
+- how did we built the predictive model,
+- how did we handle cross validation,
+- what is the expected out of sample error, and 
+- what is the rationale for the choices made
+
+I decided to utilize a random forest to accomplish this.  This model will: (1) predict the level of quality of the exercises, (2) perform the cross-validation, and (3) determine the expected "out of sample error rate" of those predictions. 
+
+## Exploratory Data Analysis
+
+I started with a review of the training data, which should be credited to: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+```{r loadDataChunk, results="hide",  cache=TRUE}
+training.all <- read.csv("./pml-training.csv", na.strings = c("NA","#DIV/0!"))
+testing.all  <- read.csv("./pml-testing.csv",  na.strings = c("NA","#DIV/0!"))
+summary(training.all); dim(training.all)
+```
+
+The data summary (not printed in this report due to size) immediately revealed multiple variables with a large number of missing values (NA.)  This was a first reason for my selection of random forests. If I were to use a method such as logistic regression instead, I would have to impute values which would be unreliable (since the missing percentages are over 80%), or drop all variables with any missing value, or drop the incomplete cases which would cause information loss.  
+
+Fortunately, methods such as classification trees and random forests have the following advantages:
+- they can handle missing values without problem (they can use missing values when splitting a node as naturally as they can use any other categorical or continuous value), 
+- they can flexibly handle data following any distribution (e.g. no normality assumptions or similar requirements), 
+- they can handle different types of relationships against the predictor (e.g. linear, quadratic, or other) without having to apply transformations, 
+- they are easy to interpret and explain, and 
+- they have a track record of excelent prediction results.  
+
+For these reasons, I will go with a model from the decision tree or random forest family. I decided to chose a random forest over classification trees due to its superior prediction power (a random forest creates and assemmbles many individual trees.) 
+
+Continuing with the data exploration, I noticed varibles that didn't make sense to include in the model, so I removed them from the datasets:
+- Subject identity (which would be relevant if we wanted "personalized" models, but its a bad variable if the model needs to generalize to other subjects)
+- Time stamps (which could be used for feature extraction but not for model training since they don't repeat)
+- Attributes without variability (amplitude_yaw_belt, amplitude_yaw_dumbbell, amplitude_yaw_forearm)
+- Attributes completely missing (kurtosis_yaw_belt, skewness_yaw_belt, kurtosis_yaw_dumbbell, skewness_yaw_dumbbell, kurtosis_yaw_forearm, skewness_yaw_forearm)
+- Observation number in the file (irrelevant for prediction)
+
+
+```{r removeVarsChunk, echo=FALSE, results='hide',  cache=TRUE}
+#Drop the variables... no need to display this code since its trivial...
+vars.to.remove <- c('X','raw_timestamp_part_1','cvtd_timestamp','raw_timestamp_part_2','user_name',
+                   'kurtosis_yaw_belt','skewness_yaw_belt','kurtosis_yaw_dumbbell',
+                   'skewness_yaw_dumbbell','kurtosis_yaw_forearm','skewness_yaw_forearm',
+                   'amplitude_yaw_belt','amplitude_yaw_dumbbell','amplitude_yaw_forearm')
+length(vars.to.remove)
+
+dim(training.all)
+training.all <- training.all[, !(colnames(training.all) %in% vars.to.remove)]
+dim(training.all)
+
+dim(testing.all)
+testing.all <- testing.all[, !(colnames(testing.all) %in% vars.to.remove)]
+dim(testing.all)
+```
+
+I also wanted to understand the distribution of the target variable (classe.)  One can see that its faily balanced except for a class A (which represents an exercise well executed):
+
+```{r targetChunk}
+table(training.all$classe)
+```
+
+
+## Variable Selection
+
+Before starting to develop the real prediction model, I decided to take a small sample and run a "quick" model for variable prioritization purposes. I fed all 147 variables and generated a list of the "top 50 variables" by  importance. The random forest algorythm has a clever mechanism to identify the importance of each variable by substracting "randomly-permuted correct predictions" from "real correct predictions".
+
+
+```{r variableSelectionChunk,  cache=TRUE}
+set.seed(1)
+smallsample    <- createDataPartition(y=training.all[,"classe"], p=0.30, list=FALSE)
+training.small <- training.all[smallsample,]
+fit.small      <- train(classe~., method="rf", data=training.small)
+var.importance <- varImp(fit.small)$importance
+var.importance$names <- row.names(var.importance)
+model.vars     <- var.importance[order(var.importance$Overall, decreasing=TRUE),"names"][1:50]
+model.vars
+```
+
+
+## Model Building
+
+After identifying the most important variables for the prediction of the class, I created the "real" random forest using the top variables and all the available observations. This is the predictive model that we'll use to score the observations whose class we don't know.
+
+Here is the rationale for my choices: 
+- I decided to use every observation as opposed to creating two partitions (e.g. training vs. testing) because the random forest handles this internally (as part of the algorythm itself) when it creates trees.
+- Having less variables (but the most important ones) will help the random forest to finish faster without sacrificing much prediction power, so I kept only the target variable and the "important variables" listed above in the input dataset. 
+- I let the random forest handle the cross-validation, since it has the ability to do it internally and does it very well. The forest will even give us the "OOB estimate of  error rate" (OOB=Out of Bag.)  This OOB error rate is, in practice, a fairly reliable estimate of the error rate that we will observe when we apply the prediction model to new data (e.g. the out-of-sample error rate that we need to determine.)
+
+```{r rfTrainingChunk,  cache=TRUE}
+set.seed(1)
+fit <- train(classe~., method="rf", data=training.all[,c("classe",model.vars)])
+fit$finalModel
+```
+
+
+```{r rpartTrainingChunk, echo=FALSE, results='hide',  cache=TRUE}
+## Alternative Model
+#For comparison purposes only, I created a CART classification tree using all the observations and all variables (since this method is less computationally intense.)
+#set.seed(100)
+#sampleB      <- createDataPartition(y=training.all[,"classe"], p=0.70, list=FALSE)
+#training.B   <- training.all[sampleB,]
+#validation.B <- training.all[-sampleB,]
+#fitB         <- train(classe~., method="rpart", data=training.B)
+#predB        <- predict(fitB, newdata=validation.B)
+#fitB$finalModel
+#confusionMatrix(validation.B$classe, predB)
+#The regression forest performs better than the single classification trees due to the aformentioned reasons.
+```
+
+
+## Conclusions
+
+- The regression forest performs well predicting the target variable classe. It could certainly be improved (like any model) but for the purpose of this submission it is more than adequate.  
+- The model (the "fit" object) can be used to predict "classe"" for the observations in the testing dataset (which I will submit via the appropiate screen) 
+- We estimate that the out of sample error rate will be around 13% (the value from the random forest results table above.)
+
+With this, we have completed all the objectives of the report.  
+
+
+Report date:
+```{r endChunk, echo=FALSE}
+Sys.time()
+```
